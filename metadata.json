@@ -1,0 +1,6 @@
+{
+  "name": "King Kong Labyrinth - La Quête Royale",
+  "description": "Jeu d'aventure et labyrinthe arcade complet : guidez le Roi Kong, récoltez 5 bananes dorées par niveau, évitez pièges et ennemis, gérez vos cœurs royaux avec maquette interactive détaillée.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
