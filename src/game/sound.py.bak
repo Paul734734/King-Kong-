@@ -1,0 +1,177 @@
+import array
+import math
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional
+
+import pygame
+
+from .storage import SaveStore
+
+SAMPLE_RATE = 22050
+
+
+def _constant(freq: float) -> Callable[[float], float]:
+    return lambda t: freq
+
+
+def _exp_ramp(f0: float, f1: float, duration: float) -> Callable[[float], float]:
+    return lambda t: f0 * (f1 / f0) ** min(1.0, t / duration)
+
+
+def _linear_ramp(f0: float, f1: float, duration: float) -> Callable[[float], float]:
+    return lambda t: f0 + (f1 - f0) * min(1.0, t / duration)
+
+
+def _steps(points: List[tuple]) -> Callable[[float], float]:
+    def freq(t: float) -> float:
+        current = points[0][1]
+        for start, value in points:
+            if t >= start:
+                current = value
+        return current
+
+    return freq
+
+
+@dataclass
+class Tone:
+    wave: str
+    duration: float
+    freq: Callable[[float], float]
+    volume: float
+    end_volume: float
+    offset: float = 0.0
+
+
+def _wave_sample(wave: str, phase: float) -> float:
+    p = phase % 1.0
+    if wave == "sine":
+        return math.sin(2 * math.pi * p)
+    if wave == "triangle":
+        return 1.0 - 4.0 * abs(((p + 0.25) % 1.0) - 0.5)
+    if wave == "sawtooth":
+        return 2 * p - 1
+    if wave == "square":
+        return 1.0 if p < 0.5 else -1.0
+    return 0.0
+
+
+class SoundManager:
+    def __init__(self, store: SaveStore):
+        self.store = store
+        self.is_muted = store.muted
+        self.ready = False
+        self.sounds: Dict[str, pygame.mixer.Sound] = {}
+        self._init_mixer()
+
+    def _init_mixer(self) -> None:
+        try:
+            pygame.mixer.pre_init(SAMPLE_RATE, -16, 1, 512)
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+            self.ready = True
+            self._build_sounds()
+        except pygame.error:
+            self.ready = False
+
+    def _render(self, tones: List[Tone]) -> pygame.mixer.Sound:
+        total = max(tone.offset + tone.duration for tone in tones)
+        buffer = [0.0] * (int(total * SAMPLE_RATE) + 1)
+        for tone in tones:
+            start = int(tone.offset * SAMPLE_RATE)
+            count = int(tone.duration * SAMPLE_RATE)
+            phase = 0.0
+            ratio = tone.end_volume / tone.volume
+            for i in range(count):
+                t = i / SAMPLE_RATE
+                phase += tone.freq(t) / SAMPLE_RATE
+                gain = tone.volume * ratio ** (t / tone.duration)
+                buffer[start + i] += _wave_sample(tone.wave, phase) * gain
+        pcm = array.array(
+            "h",
+            (int(max(-1.0, min(1.0, v)) * 32767 * 0.9) for v in buffer),
+        )
+        return pygame.mixer.Sound(buffer=pcm.tobytes())
+
+    def _build_sounds(self) -> None:
+        self.sounds["banana"] = self._render(
+            [
+                Tone(
+                    "triangle",
+                    0.35,
+                    _steps([(0, 523.25), (0.05, 659.25), (0.10, 783.99), (0.15, 1046.50)]),
+                    0.25,
+                    0.001,
+                )
+            ]
+        )
+        self.sounds["heart"] = self._render(
+            [Tone("sine", 0.3, _exp_ramp(440, 880, 0.2), 0.2, 0.001)]
+        )
+
+        def shield_freq(t: float) -> float:
+            if t < 0.25:
+                return 300 + (900 - 300) * (t / 0.25)
+            return 900 * (600 / 900) ** min(1.0, (t - 0.25) / 0.15)
+
+        self.sounds["shield"] = self._render([Tone("sine", 0.4, shield_freq, 0.2, 0.01)])
+        self.sounds["damage"] = self._render(
+            [Tone("sawtooth", 0.25, _exp_ramp(180, 50, 0.25), 0.35, 0.001)]
+        )
+        self.sounds["trap_warning"] = self._render(
+            [Tone("square", 0.05, _constant(800), 0.05, 0.001)]
+        )
+        self.sounds["trap_burst"] = self._render(
+            [Tone("sawtooth", 0.15, _exp_ramp(240, 80, 0.15), 0.18, 0.001)]
+        )
+        self.sounds["level_victory"] = self._render(
+            [
+                Tone("triangle", 0.35, _constant(freq), 0.25, 0.001, offset=idx * 0.12)
+                for idx, freq in enumerate([440, 554.37, 659.25, 880])
+            ]
+        )
+        self.sounds["game_over"] = self._render(
+            [
+                Tone("sawtooth", 0.28, _constant(freq), 0.2, 0.001, offset=idx * 0.14)
+                for idx, freq in enumerate([350, 310, 260, 195])
+            ]
+        )
+
+    def toggle_mute(self) -> bool:
+        self.is_muted = not self.is_muted
+        self.store.set_muted(self.is_muted)
+        return self.is_muted
+
+    def get_muted(self) -> bool:
+        return self.is_muted
+
+    def _play(self, name: str) -> None:
+        if self.is_muted or not self.ready:
+            return
+        sound: Optional[pygame.mixer.Sound] = self.sounds.get(name)
+        if sound is not None:
+            sound.play()
+
+    def play_banana(self) -> None:
+        self._play("banana")
+
+    def play_heart(self) -> None:
+        self._play("heart")
+
+    def play_shield(self) -> None:
+        self._play("shield")
+
+    def play_damage(self) -> None:
+        self._play("damage")
+
+    def play_trap_warning(self) -> None:
+        self._play("trap_warning")
+
+    def play_trap_burst(self) -> None:
+        self._play("trap_burst")
+
+    def play_level_victory(self) -> None:
+        self._play("level_victory")
+
+    def play_game_over(self) -> None:
+        self._play("game_over")
